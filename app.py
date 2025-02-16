@@ -51,6 +51,7 @@ def process_orders(df):
     Returns:
         closed_positions_df: DataFrame of closed positions
         open_positions_dict: Dictionary of currently open positions
+        orphan_sell_orders: List of SELL orders that occurred without a matching BUY
     """
     # Convert necessary columns
     df['Price'] = df['Price'].astype(float)
@@ -65,6 +66,7 @@ def process_orders(df):
 
     open_positions = {}   # { base_currency: [ {price, amount, date}, ... ], ... }
     closed_positions = []
+    orphan_sell_orders = []  # To store SELL orders with no prior BUY
 
     for _, row in df.iterrows():
         base_currency = row['Base Currency']
@@ -83,45 +85,46 @@ def process_orders(df):
                 'date': date
             })
         elif side == 'SELL':
+            # If there is no open position, add the order to orphan list instead of crashing
+            if base_currency not in open_positions or not open_positions[base_currency]:
+                orphan_sell_orders.append(row)
+                continue
+
             # Close existing positions using FIFO
-            if base_currency in open_positions and len(open_positions[base_currency]) > 0:
-                remaining_to_sell = amount
-                while remaining_to_sell > 0 and open_positions[base_currency]:
-                    open_order = open_positions[base_currency][0]
-                    if open_order['amount'] <= remaining_to_sell:
-                        closed_amount = open_order['amount']
-                        profit_loss_usdt = closed_amount * (price - open_order['price'])
-
-                        closed_positions.append({
-                            'Base Currency': base_currency,
-                            'Open Price': open_order['price'],
-                            'Close Price': price,
-                            'Amount': closed_amount,
-                            'Open Date': open_order['date'],
-                            'Close Date': date,
-                            'Profit/Loss USDT': profit_loss_usdt
-                        })
-                        remaining_to_sell -= open_order['amount']
-                        open_positions[base_currency].pop(0)
-                    else:
-                        closed_amount = remaining_to_sell
-                        profit_loss_usdt = closed_amount * (price - open_order['price'])
-
-                        closed_positions.append({
-                            'Base Currency': base_currency,
-                            'Open Price': open_order['price'],
-                            'Close Price': price,
-                            'Amount': closed_amount,
-                            'Open Date': open_order['date'],
-                            'Close Date': date,
-                            'Profit/Loss USDT': profit_loss_usdt
-                        })
-                        open_order['amount'] -= remaining_to_sell
-                        remaining_to_sell = 0
+            remaining_to_sell = amount
+            while remaining_to_sell > 0 and open_positions[base_currency]:
+                open_order = open_positions[base_currency][0]
+                if open_order['amount'] <= remaining_to_sell:
+                    closed_amount = open_order['amount']
+                    profit_loss_usdt = closed_amount * (price - open_order['price'])
+                    closed_positions.append({
+                        'Base Currency': base_currency,
+                        'Open Price': open_order['price'],
+                        'Close Price': price,
+                        'Amount': closed_amount,
+                        'Open Date': open_order['date'],
+                        'Close Date': date,
+                        'Profit/Loss USDT': profit_loss_usdt
+                    })
+                    remaining_to_sell -= open_order['amount']
+                    open_positions[base_currency].pop(0)
+                else:
+                    closed_amount = remaining_to_sell
+                    profit_loss_usdt = closed_amount * (price - open_order['price'])
+                    closed_positions.append({
+                        'Base Currency': base_currency,
+                        'Open Price': open_order['price'],
+                        'Close Price': price,
+                        'Amount': closed_amount,
+                        'Open Date': open_order['date'],
+                        'Close Date': date,
+                        'Profit/Loss USDT': profit_loss_usdt
+                    })
+                    open_order['amount'] -= remaining_to_sell
+                    remaining_to_sell = 0
 
     closed_positions_df = pd.DataFrame(closed_positions)
-
-    return closed_positions_df, open_positions
+    return closed_positions_df, open_positions, orphan_sell_orders
 
 
 def open_positions_to_df(open_positions_dict):
@@ -217,7 +220,6 @@ def plot_monthly_percentage_bar(closed_positions_df):
 # -----------------------------
 # Streamlit App
 # -----------------------------
-
 def main():
     st.title("Dynamic Portfolio Viewer")
     st.sidebar.header("Upload CSV File")
@@ -228,16 +230,12 @@ def main():
     if uploaded_file is not None:
         # Read CSV
         df = pd.read_csv(uploaded_file)
-        
-        # Show number of lines in the CSV
         st.write(f"**Number of rows in the uploaded CSV:** {df.shape[0]}")
-        
-        # Data Preview
         st.subheader("Data Preview")
         st.write(df.head())
 
-        # Process orders
-        closed_positions_df, open_positions_dict = process_orders(df)
+        # Process orders and capture orphan SELL orders
+        closed_positions_df, open_positions_dict, orphan_sell_orders = process_orders(df)
         
         # Show Open Positions
         open_positions_df = open_positions_to_df(open_positions_dict)
@@ -251,14 +249,51 @@ def main():
         st.subheader("Closed Positions")
         if closed_positions_df.empty:
             st.write("No closed positions yet.")
-            return
         else:
-            st.write(closed_positions_df.head(50))  # or st.write(closed_positions_df) for all
+            st.write(closed_positions_df.head(50))
 
-        # Calculate extended statistics
+        # ----- Missing BUY Data for SELL orders -----
+        if orphan_sell_orders:
+            st.subheader("Missing BUY Data for SELL Orders")
+            st.info("The following SELL order(s) have no matching BUY order. Please provide the missing BUY data:")
+
+            # Loop through each orphan SELL order and display a form
+            for i, sell_order in enumerate(orphan_sell_orders):
+                st.write(f"**SELL Order #{i+1}:**")
+                st.write(f"Base Currency: {sell_order['Base Currency']}")
+                st.write(f"Sell Price: {sell_order['Price']}")
+                st.write(f"Amount: {sell_order['Executed']}")
+                st.write(f"Sell Date: {sell_order['Date(UTC)']}")
+                
+                with st.form(key=f"missing_buy_form_{i}"):
+                    missing_buy_price = st.number_input("Enter the missing BUY price", min_value=0.0, step=0.0001, format="%.4f")
+                    missing_buy_date = st.date_input("Enter the missing BUY date")
+                    submitted = st.form_submit_button("Submit Missing BUY Data")
+                    
+                    if submitted:
+                        profit_loss_usdt = sell_order['Executed'] * (sell_order['Price'] - missing_buy_price)
+                        manual_closed_op = {
+                            'Base Currency': sell_order['Base Currency'],
+                            'Open Price': missing_buy_price,
+                            'Close Price': sell_order['Price'],
+                            'Amount': sell_order['Executed'],
+                            'Open Date': pd.Timestamp(missing_buy_date),
+                            'Close Date': pd.Timestamp(sell_order['Date(UTC)']),
+                            'Profit/Loss USDT': profit_loss_usdt
+                        }
+                        if "manual_missing_operations" not in st.session_state:
+                            st.session_state.manual_missing_operations = []
+                        st.session_state.manual_missing_operations.append(manual_closed_op)
+                        st.success("Missing BUY data submitted for this SELL order!")
+
+        # Display any manually submitted missing BUY data
+        if "manual_missing_operations" in st.session_state and st.session_state.manual_missing_operations:
+            st.subheader("Manually Added Closed Operations")
+            manual_closed_df = pd.DataFrame(st.session_state.manual_missing_operations)
+            st.write(manual_closed_df)
+
+        # Continue with displaying statistics, plots, etc.
         stats, closed_positions_df = calculate_statistics(closed_positions_df)
-
-        # Display interesting statistics
         st.subheader("Interesting Statistics")
         if stats:
             for key, value in stats.items():
