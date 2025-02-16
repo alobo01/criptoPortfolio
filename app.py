@@ -4,6 +4,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Formatting options for Pandas
 pd.options.display.float_format = '{:.4f}'.format
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
@@ -16,6 +17,7 @@ pd.set_option('display.width', None)
 def load_csv_files(folder_path):
     """
     Load and combine CSV files from a given folder path.
+    (This function is kept for potential future use.)
     """
     all_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.csv')]
     df_list = [pd.read_csv(file) for file in all_files]
@@ -41,8 +43,7 @@ def get_base_currency(pair):
     if quote != 'UNKNOWN':
         return pair.replace(quote, '')
     else:
-        # If we cannot find a known quote, fallback to the beginning of the pair.
-        # This is a simplistic fallback, adapt to your specific usage if needed.
+        # Fallback: if no known quote is found, return the entire pair (or adapt as needed)
         return pair
 
 def process_orders(df):
@@ -126,7 +127,6 @@ def process_orders(df):
     closed_positions_df = pd.DataFrame(closed_positions)
     return closed_positions_df, open_positions, orphan_sell_orders
 
-
 def open_positions_to_df(open_positions_dict):
     """
     Convert the open_positions dictionary into a DataFrame for display.
@@ -142,15 +142,14 @@ def open_positions_to_df(open_positions_dict):
             })
     return pd.DataFrame(records)
 
-
 def calculate_statistics(closed_positions_df):
     """
     Calculate various interesting statistics for the closed positions.
-    Returns a dictionary of stats.
+    Returns a dictionary of stats and an updated DataFrame.
     """
     stats = {}
     if closed_positions_df.empty:
-        return stats
+        return stats, closed_positions_df
 
     # Basic stats
     stats['Total Closed Trades'] = len(closed_positions_df)
@@ -159,7 +158,6 @@ def calculate_statistics(closed_positions_df):
 
     # Compute per-trade returns in percentage:
     # Profit/Loss % = (Profit/Loss USDT) / (Open Price * Amount) * 100
-    # Handle division-by-zero carefully:
     cost_basis = closed_positions_df['Open Price'] * closed_positions_df['Amount']
     closed_positions_df['Profit/Loss %'] = closed_positions_df['Profit/Loss USDT'] / cost_basis.replace(0, float('nan')) * 100
 
@@ -170,10 +168,8 @@ def calculate_statistics(closed_positions_df):
     stats['Losing Trades'] = len(losing_trades)
     stats['Win Rate'] = (len(winning_trades) / len(closed_positions_df) * 100) if len(closed_positions_df) > 0 else 0
 
-    # Average Profit/Loss in USDT
+    # Average Profit/Loss in USDT and Percentage
     stats['Average PnL (USDT)'] = closed_positions_df['Profit/Loss USDT'].mean()
-
-    # Average Profit/Loss in %
     stats['Average PnL (%)'] = closed_positions_df['Profit/Loss %'].mean()
 
     # By month - number of operations
@@ -183,23 +179,20 @@ def calculate_statistics(closed_positions_df):
 
     return stats, closed_positions_df
 
-
 def plot_monthly_percentage_bar(closed_positions_df):
     """
-    Create a barplot of the sum (or average) percentage of profit per month.
+    Create a barplot of the monthly weighted percentage profit.
     """
     if closed_positions_df.empty:
         st.write("No closed positions to plot.")
         return
 
-    # Group by Month
+    # Prepare the DataFrame for grouping by month
     monthly_pnl_df = closed_positions_df.copy()
     monthly_pnl_df['Month'] = monthly_pnl_df['Close Date'].dt.to_period('M')
-
-    # Sum of PnL(%) can be misleading if not weighted. 
-    # Usually we want Weighted Average of returns or an overall ratio:
-    # Weighted approach: sum of PnL USDT / sum of cost basis * 100 for each month.
     monthly_pnl_df['Cost Basis'] = monthly_pnl_df['Open Price'] * monthly_pnl_df['Amount']
+    
+    # Group by Month using a weighted approach: sum(PnL USDT)/sum(Cost Basis) * 100
     monthly_grouped = monthly_pnl_df.groupby('Month').agg({
         'Profit/Loss USDT': 'sum',
         'Cost Basis': 'sum'
@@ -222,145 +215,147 @@ def plot_monthly_percentage_bar(closed_positions_df):
 # -----------------------------
 def main():
     st.title("Dynamic Portfolio Viewer")
-    st.sidebar.header("Upload CSV File")
+    st.sidebar.header("Upload CSV File(s)")
 
-    # Upload CSV file
-    uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type=["csv"])
+    # Upload multiple CSV files at once
+    uploaded_files = st.sidebar.file_uploader("Choose CSV file(s)", type=["csv"], accept_multiple_files=True)
     
-    if uploaded_file is not None:
-        # Read CSV
-        df = pd.read_csv(uploaded_file)
-        st.write(f"**Number of rows in the uploaded CSV:** {df.shape[0]}")
-        st.subheader("Data Preview")
-        st.write(df.head())
-
-        # Process orders and capture orphan SELL orders
-        closed_positions_df, open_positions_dict, orphan_sell_orders = process_orders(df)
+    if uploaded_files:
+        list_of_dfs = []
+        file_names = []
+        for file in uploaded_files:
+            try:
+                df_temp = pd.read_csv(file)
+                list_of_dfs.append(df_temp)
+                file_names.append(file.name)
+            except Exception as e:
+                st.error(f"Error reading file {file.name}: {e}")
         
-        # Show Open Positions
-        open_positions_df = open_positions_to_df(open_positions_dict)
-        st.subheader("Open Positions")
-        if open_positions_df.empty:
-            st.write("No open positions.")
-        else:
-            st.write(open_positions_df)
+        if list_of_dfs:
+            # Combine all uploaded CSVs into one DataFrame
+            df = pd.concat(list_of_dfs, ignore_index=True)
+            st.write(f"**Uploaded Files:** {', '.join(file_names)}")
+            st.write(f"**Total rows combined:** {df.shape[0]}")
+            st.subheader("Data Preview (first 5 rows)")
+            st.write(df.head())
 
-        # Show Closed Positions
-        st.subheader("Closed Positions")
-        if closed_positions_df.empty:
-            st.write("No closed positions yet.")
-        else:
-            st.write(closed_positions_df.head(50))
+            # Process orders and capture orphan SELL orders
+            closed_positions_df, open_positions_dict, orphan_sell_orders = process_orders(df)
+            
+            # Show Open Positions
+            open_positions_df = open_positions_to_df(open_positions_dict)
+            st.subheader("Open Positions")
+            if open_positions_df.empty:
+                st.write("No open positions.")
+            else:
+                st.write(open_positions_df)
 
-        # ----- Missing BUY Data for SELL orders -----
-        if orphan_sell_orders:
-            st.subheader("Missing BUY Data for SELL Orders")
-            st.info("The following SELL order(s) have no matching BUY order. Please provide the missing BUY data:")
+            # Show Closed Positions
+            st.subheader("Closed Positions")
+            if closed_positions_df.empty:
+                st.write("No closed positions yet.")
+            else:
+                st.write(closed_positions_df.head(50))
 
-            # Loop through each orphan SELL order and display a form
-            for i, sell_order in enumerate(orphan_sell_orders):
-                st.write(f"**SELL Order #{i+1}:**")
-                st.write(f"Base Currency: {sell_order['Base Currency']}")
-                st.write(f"Sell Price: {sell_order['Price']}")
-                st.write(f"Amount: {sell_order['Executed']}")
-                st.write(f"Sell Date: {sell_order['Date(UTC)']}")
-                
-                with st.form(key=f"missing_buy_form_{i}"):
-                    missing_buy_price = st.number_input("Enter the missing BUY price", min_value=0.0, step=0.0001, format="%.4f")
-                    missing_buy_date = st.date_input("Enter the missing BUY date")
-                    submitted = st.form_submit_button("Submit Missing BUY Data")
+            # ----- Missing BUY Data for SELL orders -----
+            if orphan_sell_orders:
+                st.subheader("Missing BUY Data for SELL Orders")
+                st.info("The following SELL order(s) have no matching BUY order. Please provide the missing BUY data:")
+
+                # Loop through each orphan SELL order and display a form
+                for i, sell_order in enumerate(orphan_sell_orders):
+                    st.write(f"**SELL Order #{i+1}:**")
+                    st.write(f"Base Currency: {sell_order['Base Currency']}")
+                    st.write(f"Sell Price: {sell_order['Price']}")
+                    st.write(f"Amount: {sell_order['Executed']}")
+                    st.write(f"Sell Date: {sell_order['Date(UTC)']}")
                     
-                    if submitted:
-                        profit_loss_usdt = sell_order['Executed'] * (sell_order['Price'] - missing_buy_price)
-                        manual_closed_op = {
-                            'Base Currency': sell_order['Base Currency'],
-                            'Open Price': missing_buy_price,
-                            'Close Price': sell_order['Price'],
-                            'Amount': sell_order['Executed'],
-                            'Open Date': pd.Timestamp(missing_buy_date),
-                            'Close Date': pd.Timestamp(sell_order['Date(UTC)']),
-                            'Profit/Loss USDT': profit_loss_usdt
-                        }
-                        if "manual_missing_operations" not in st.session_state:
-                            st.session_state.manual_missing_operations = []
-                        st.session_state.manual_missing_operations.append(manual_closed_op)
-                        st.success("Missing BUY data submitted for this SELL order!")
+                    with st.form(key=f"missing_buy_form_{i}"):
+                        missing_buy_price = st.number_input("Enter the missing BUY price", min_value=0.0, step=0.0001, format="%.4f")
+                        missing_buy_date = st.date_input("Enter the missing BUY date")
+                        submitted = st.form_submit_button("Submit Missing BUY Data")
+                        
+                        if submitted:
+                            profit_loss_usdt = sell_order['Executed'] * (sell_order['Price'] - missing_buy_price)
+                            manual_closed_op = {
+                                'Base Currency': sell_order['Base Currency'],
+                                'Open Price': missing_buy_price,
+                                'Close Price': sell_order['Price'],
+                                'Amount': sell_order['Executed'],
+                                'Open Date': pd.Timestamp(missing_buy_date),
+                                'Close Date': pd.Timestamp(sell_order['Date(UTC)']),
+                                'Profit/Loss USDT': profit_loss_usdt
+                            }
+                            if "manual_missing_operations" not in st.session_state:
+                                st.session_state.manual_missing_operations = []
+                            st.session_state.manual_missing_operations.append(manual_closed_op)
+                            st.success("Missing BUY data submitted for this SELL order!")
 
-        # Display any manually submitted missing BUY data
-        if "manual_missing_operations" in st.session_state and st.session_state.manual_missing_operations:
-            st.subheader("Manually Added Closed Operations")
-            manual_closed_df = pd.DataFrame(st.session_state.manual_missing_operations)
-            st.write(manual_closed_df)
+            # Display any manually submitted missing BUY data
+            if "manual_missing_operations" in st.session_state and st.session_state.manual_missing_operations:
+                st.subheader("Manually Added Closed Operations")
+                manual_closed_df = pd.DataFrame(st.session_state.manual_missing_operations)
+                st.write(manual_closed_df)
 
-        # Continue with displaying statistics, plots, etc.
-        stats, closed_positions_df = calculate_statistics(closed_positions_df)
-        st.subheader("Interesting Statistics")
-        if stats:
-            for key, value in stats.items():
-                if key != 'Operations per Month':
-                    st.write(f"**{key}:** {value}")
-                else:
-                    st.write("**Operations per Month:**")
-                    st.write(pd.DataFrame(value.items(), columns=['Month', 'Operations']))
+            # Continue with displaying statistics, plots, etc.
+            stats, closed_positions_df = calculate_statistics(closed_positions_df)
+            st.subheader("Interesting Statistics")
+            if stats:
+                for key, value in stats.items():
+                    if key != 'Operations per Month':
+                        st.write(f"**{key}:** {value}")
+                    else:
+                        st.write("**Operations per Month:**")
+                        st.write(pd.DataFrame(value.items(), columns=['Month', 'Operations']))
+            else:
+                st.write("No statistics available.")
+
+            # Profit per month, trimester, and year (Absolute and Percentage)
+            if 'Profit/Loss %' not in closed_positions_df.columns:
+                closed_positions_df['Profit/Loss %'] = 0.0
+
+            closed_positions_df['Month'] = closed_positions_df['Close Date'].dt.to_period('M')
+            closed_positions_df['Trimester'] = closed_positions_df['Close Date'].dt.to_period('Q')
+            closed_positions_df['Year'] = closed_positions_df['Close Date'].dt.year
+
+            time_period = st.selectbox("Select Time Period", ["Month", "Trimester", "Year"])
+            profit_type = st.selectbox("Select Profit Type", ["Absolute", "Percentage"])
+
+            # Map time period to the actual column
+            time_column = "Month" if time_period == "Month" else ("Trimester" if time_period == "Trimester" else "Year")
+            profit_column = "Profit/Loss USDT" if profit_type == "Absolute" else "Profit/Loss %"
+
+            # Group by time period
+            profit_summary = (closed_positions_df
+                              .groupby(time_column)[profit_column]
+                              .agg(['sum', 'mean', 'std'])
+                              .rename(columns={'sum': 'Sum', 'mean': 'Mean', 'std': 'Std Dev'}))
+
+            st.subheader(f"{profit_type} Profit per {time_period}")
+            st.write(profit_summary)
+
+            # Histogram of chosen profit type
+            fig, ax = plt.subplots()
+            closed_positions_df[profit_column].hist(bins=20, ax=ax)
+            ax.set_title(f"{profit_type} Profit Distribution")
+            ax.set_xlabel(f"{profit_type} Profit (USDT or %)")
+            ax.set_ylabel("Frequency")
+            st.pyplot(fig)
+
+            # Line Plot of Cumulative Profit
+            closed_positions_df['Cumulative Profit'] = closed_positions_df[profit_column].cumsum()
+            fig, ax = plt.subplots()
+            closed_positions_df.plot(x='Close Date', y='Cumulative Profit', ax=ax)
+            ax.set_title(f"Cumulative {profit_type} Profit")
+            ax.set_xlabel("Date")
+            ax.set_ylabel(f"Cumulative {profit_type} Profit (USDT or %)")
+            st.pyplot(fig)
+
+            # Barplot: Percentage of profit per month
+            st.subheader("Monthly Percentage Profit")
+            plot_monthly_percentage_bar(closed_positions_df)
         else:
-            st.write("No statistics available.")
-
-        # Profit per month, trimester, and year (Absolute and Percentage)
-        # First ensure we have the 'Profit/Loss %' in closed_positions_df
-        if 'Profit/Loss %' not in closed_positions_df.columns:
-            # In case empty or something unexpected
-            closed_positions_df['Profit/Loss %'] = 0.0
-
-        closed_positions_df['Month'] = closed_positions_df['Close Date'].dt.to_period('M')
-        closed_positions_df['Trimester'] = closed_positions_df['Close Date'].dt.to_period('Q')
-        closed_positions_df['Year'] = closed_positions_df['Close Date'].dt.year
-
-        time_period = st.selectbox("Select Time Period", ["Month", "Trimester", "Year"])
-        profit_type = st.selectbox("Select Profit Type", ["Absolute", "Percentage"])
-
-        # Map time period to the actual column
-        if time_period == "Month":
-            time_column = "Month"
-        elif time_period == "Trimester":
-            time_column = "Trimester"
-        else:
-            time_column = "Year"
-
-        # Map profit type
-        if profit_type == "Absolute":
-            profit_column = "Profit/Loss USDT"
-        else:
-            profit_column = "Profit/Loss %"
-
-        # Group by time period
-        profit_summary = (closed_positions_df
-                          .groupby(time_column)[profit_column]
-                          .agg(['sum', 'mean', 'std'])
-                          .rename(columns={'sum': 'Sum', 'mean': 'Mean', 'std': 'Std Dev'}))
-
-        st.subheader(f"{profit_type} Profit per {time_period}")
-        st.write(profit_summary)
-
-        # Histogram of chosen profit type
-        fig, ax = plt.subplots()
-        closed_positions_df[profit_column].hist(bins=20, ax=ax)
-        ax.set_title(f"{profit_type} Profit Distribution")
-        ax.set_xlabel(f"{profit_type} Profit (USDT or %)")
-        ax.set_ylabel("Frequency")
-        st.pyplot(fig)
-
-        # Line Plot of Cumulative Profit
-        closed_positions_df['Cumulative Profit'] = closed_positions_df[profit_column].cumsum()
-        fig, ax = plt.subplots()
-        closed_positions_df.plot(x='Close Date', y='Cumulative Profit', ax=ax)
-        ax.set_title(f"Cumulative {profit_type} Profit")
-        ax.set_xlabel("Date")
-        ax.set_ylabel(f"Cumulative {profit_type} Profit (USDT or %)")
-        st.pyplot(fig)
-
-        # Barplot: Percentage of profit per month
-        st.subheader("Monthly Percentage Profit")
-        plot_monthly_percentage_bar(closed_positions_df)
+            st.warning("No valid CSV files were uploaded.")
 
 if __name__ == "__main__":
     main()
