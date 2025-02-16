@@ -301,7 +301,7 @@ def main():
                     st.write(f"**{key}:** {value}")
                 else:
                     st.write("**Operations per Month:**")
-                    st.write(value)
+                    st.write(pd.DataFrame(value.items(), columns=['Month', 'Operations']))
         else:
             st.write("No statistics available.")
 
